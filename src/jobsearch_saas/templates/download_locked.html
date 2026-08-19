@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Private download — LetItApply{% endblock %}
+{% block content %}
+<p class="section-kicker">Protected</p>
+<h1>This download is private</h1>
+<p class="lead">
+  Companion install is only for the LetItApply account whose payment was approved.
+  Sharing this link does not give anyone else access.
+</p>
+<div class="panel" style="max-width:40rem">
+  {% if user %}
+    <p>You're signed in as <strong>{{ user.email }}</strong>.</p>
+    {% if can_download %}
+      <p class="muted">Open Companion from your dashboard after approval — a copied URL will not work on its own.</p>
+      <form method="post" action="/download/open">
+        <button class="btn primary" type="submit">Open my Companion download</button>
+      </form>
+    {% else %}
+      <p class="muted">Your payment has not been approved yet, so this page stays locked.</p>
+      <p><a class="btn primary" href="/billing">View plans</a></p>
+    {% endif %}
+  {% else %}
+    <p class="muted">Sign in with the approved account to continue.</p>
+    <p><a class="btn primary" href="/login?next=/download">Sign in</a></p>
+  {% endif %}
+</div>
+{% endblock %}

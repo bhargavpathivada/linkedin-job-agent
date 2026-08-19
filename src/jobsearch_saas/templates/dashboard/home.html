@@ -7,7 +7,11 @@
     <h1>Today</h1>
   </div>
   <div class="cta-row" style="margin:0">
-    <a class="btn ghost" href="/download">Companion</a>
+    {% if can_download %}
+    <form method="post" action="/download/open" style="display:inline">
+      <button class="btn ghost" type="submit">Companion</button>
+    </form>
+    {% endif %}
     <a class="btn primary" href="/matches">Review matches</a>
   </div>
 </div>
@@ -25,7 +29,13 @@
     <p class="muted">Device: {{ companion.device_name or companion.device_id or '—' }}</p>
   {% else %}
     <p class="muted">No companion sync yet. Install the desktop app, connect LinkedIn on your laptop, then Start searching.</p>
-    <a class="btn primary" href="/download">Get Companion</a>
+    {% if can_download %}
+    <form method="post" action="/download/open">
+      <button class="btn primary" type="submit">Get Companion</button>
+    </form>
+    {% else %}
+    <p class="muted">Companion download unlocks on this account after your payment is approved.</p>
+    {% endif %}
   {% endif %}
 </div>
 

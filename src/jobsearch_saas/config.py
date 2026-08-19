@@ -118,6 +118,14 @@ PRICES_INCLUDE_GST = os.environ.get("SAAS_PRICES_INCLUDE_GST", "1") == "1"
 SUPPORT_EMAIL = os.environ.get("SAAS_SUPPORT_EMAIL", "support@letitapply.com")
 LEGAL_ENTITY = os.environ.get("SAAS_LEGAL_ENTITY", "LetItApply")
 
+# Transactional mail (payment approved). Falls back to the LetItApply Gmail SMTP used by the CLI agent.
+SMTP_HOST = os.environ.get("SAAS_SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SAAS_SMTP_PORT", "465"))
+SMTP_USERNAME = os.environ.get("SAAS_SMTP_USER") or os.environ.get("GMAIL_ADDRESS", "")
+SMTP_PASSWORD = (os.environ.get("SAAS_SMTP_PASSWORD") or os.environ.get("GMAIL_APP_PASSWORD", "")).replace(" ", "")
+MAIL_FROM = os.environ.get("SAAS_MAIL_FROM") or SMTP_USERNAME
+MAIL_FROM_NAME = os.environ.get("SAAS_MAIL_FROM_NAME", "LetItApply")
+
 # Free tier quotas
 FREE_MATCHES_PER_WEEK = 10
 FREE_DRAFTS_PER_MONTH = 3

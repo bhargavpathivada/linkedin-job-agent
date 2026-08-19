@@ -10,6 +10,7 @@ from __future__ import annotations
 import secrets
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,6 +43,14 @@ from jobsearch_saas.config import (
     SUPPORT_EMAIL,
     WEB_SESSION_COOKIE,
 )
+from jobsearch_saas.download_gate import (
+    grant_download_session,
+    login_redirect_for_download,
+    parse_download_token,
+    safe_next_path,
+    session_allows_download,
+    token_from_request_params,
+)
 from jobsearch_saas.drafts import (
     approve_and_send,
     create_draft_for_match,
@@ -51,7 +60,7 @@ from jobsearch_saas.drafts import (
     update_draft,
 )
 from jobsearch_saas.email import oauth as email_oauth
-from jobsearch_saas.entitlements import active_plan, grant_beta_pass
+from jobsearch_saas.entitlements import active_plan, grant_beta_pass, has_approved_access
 from jobsearch_saas.jobs.matching import get_search_prefs, list_matches, match_user_to_open_jobs, save_search_prefs
 from jobsearch_saas.jobs.sources import ingest_for_query, parse_user_paste, source_catalog, upsert_job
 from jobsearch_saas.privacy import controls as privacy
@@ -125,7 +134,9 @@ def _user(request: Request) -> dict[str, Any] | None:
 def require_user(request: Request) -> dict[str, Any]:
     user = _user(request)
     if not user:
-        raise HTTPException(status_code=303, headers={"Location": "/login"})
+        nxt = safe_next_path(request.url.path)
+        location = f"/login?next={quote(nxt, safe='')}" if nxt else "/login"
+        raise HTTPException(status_code=303, headers={"Location": location})
     return user
 
 
@@ -138,6 +149,7 @@ def render(request: Request, name: str, **ctx: Any) -> HTMLResponse:
         "user": user,
         "user_initials": _user_initials(user),
         "plan": plan,
+        "can_download": bool(user and has_approved_access(user["id"])),
         "support_email": SUPPORT_EMAIL,
         "flash": request.session.pop("flash", None),
     }
@@ -267,23 +279,39 @@ def signup_start(
 
 @app.get("/login", response_class=HTMLResponse)
 def login_form(request: Request) -> HTMLResponse:
+    next_path = safe_next_path(request.query_params.get("next", ""))
     if _user(request):
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse(next_path or "/", status_code=303)
+    selected_plan = request.query_params.get("plan", "")
+    google_href = "/auth/google"
+    params: list[str] = []
+    if selected_plan:
+        params.append(f"plan={quote(selected_plan, safe='')}")
+    if next_path:
+        params.append(f"next={quote(next_path, safe='')}")
+    if params:
+        google_href = f"{google_href}?{'&'.join(params)}"
     return render(
         request,
         "auth/login.html",
         oauth_ready=google_sso.sso_configured(),
-        selected_plan=request.query_params.get("plan", ""),
+        selected_plan=selected_plan,
+        next_path=next_path,
+        google_href=google_href,
     )
 
 
 @app.get("/auth/google")
-def auth_google_start(request: Request, plan: str = "") -> RedirectResponse:
+def auth_google_start(request: Request, plan: str = "", next: str = "") -> RedirectResponse:
     if not google_sso.sso_configured():
         flash(request, "Google sign-in is not configured.")
         return RedirectResponse("/login", status_code=303)
     plan_id = plan if plan in PLANS and plan != "free" else ""
-    state = google_sso.make_state(mode="login", plan_id=plan_id)
+    state = google_sso.make_state(
+        mode="login",
+        plan_id=plan_id,
+        next_path=safe_next_path(next),
+    )
     return RedirectResponse(google_sso.build_auth_url(state=state), status_code=303)
 
 
@@ -317,6 +345,7 @@ def auth_google_callback(request: Request, code: str = "", state: str = "") -> R
         record_consent(user["id"], purpose="product_updates", granted=bool(consents.get("product_updates")))
     token = create_session(user["id"])
     pending_plan = (state_data.get("plan_id") or "").strip()
+    next_path = safe_next_path(state_data.get("next_path") or "")
     if pending_plan in PLANS and pending_plan != "free":
         try:
             order = qr_payments.start_checkout(user["id"], pending_plan)
@@ -325,6 +354,8 @@ def auth_google_callback(request: Request, code: str = "", state: str = "") -> R
             dest = "/billing"
     elif is_new:
         dest = "/onboarding"
+    elif next_path:
+        dest = next_path
     else:
         dest = "/"
     flash(request, "Signed in with Google.")
@@ -481,9 +512,45 @@ def dashboard(request: Request, user: dict = Depends(require_user)) -> HTMLRespo
     )
 
 
+def _private_download_response(request: Request, name: str, status_code: int = 200) -> HTMLResponse:
+    resp = render(request, name, companion_url=COMPANION_DOWNLOAD_URL)
+    resp.status_code = status_code
+    resp.headers["Cache-Control"] = "private, no-store"
+    return resp
+
+
+@app.post("/download/open")
+def download_open(request: Request, user: dict = Depends(require_user)) -> RedirectResponse:
+    if not has_approved_access(user["id"]):
+        flash(request, "Companion download unlocks after your payment is approved.")
+        return RedirectResponse("/billing", status_code=303)
+    grant_download_session(request.session, user["id"])
+    return RedirectResponse("/download", status_code=303)
+
+
 @app.get("/download", response_class=HTMLResponse)
 def download_page(request: Request) -> HTMLResponse:
-    return render(request, "download.html", companion_url=COMPANION_DOWNLOAD_URL)
+    token = token_from_request_params(request.query_params)
+    user = _user(request)
+    if not user:
+        return RedirectResponse(login_redirect_for_download(token), status_code=303)
+
+    token_ok = False
+    if token:
+        try:
+            token_user_id = parse_download_token(token)
+        except ValueError:
+            return _private_download_response(request, "download_locked.html", 403)
+        if token_user_id != user["id"]:
+            return _private_download_response(request, "download_locked.html", 403)
+        token_ok = True
+        grant_download_session(request.session, user["id"])
+
+    session_ok = session_allows_download(request.session, user["id"])
+    if not has_approved_access(user["id"]) or not (token_ok or session_ok):
+        return _private_download_response(request, "download_locked.html", 403)
+
+    return _private_download_response(request, "download.html")
 
 
 @app.get("/matches", response_class=HTMLResponse)
@@ -952,8 +1019,11 @@ def admin_payment_approve(
     notes: str = Form(""),
 ) -> RedirectResponse:
     try:
-        qr_payments.approve_submission(submission_id, admin_email=admin_email, notes=notes)
-        admin_flash(request, "Payment approved and plan activated.")
+        result = qr_payments.approve_submission(submission_id, admin_email=admin_email, notes=notes)
+        if result and result.get("email_sent"):
+            admin_flash(request, "Payment approved and plan activated. Approval email sent.")
+        else:
+            admin_flash(request, "Payment approved and plan activated. Approval email could not be sent.")
     except Exception as exc:
         admin_flash(request, str(exc))
     return RedirectResponse(f"/admin/payments/{submission_id}", status_code=303)

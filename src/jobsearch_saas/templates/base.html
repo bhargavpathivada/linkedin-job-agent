@@ -25,7 +25,11 @@
             {% if plan %}<p class="profile-dropdown-plan">{{ plan.name if plan.name is defined else plan.plan_id }}</p>{% endif %}
             <a href="/profile">Profile</a>
             <a href="/settings">Settings</a>
-            <a href="/download">Companion</a>
+            {% if can_download %}
+            <form method="post" action="/download/open">
+              <button class="btn ghost" type="submit">Companion</button>
+            </form>
+            {% endif %}
             <form method="post" action="/logout">
               <button class="btn ghost" type="submit">Log out</button>
             </form>
@@ -33,7 +37,6 @@
         </details>
       {% else %}
         <a href="/#how">How it works</a>
-        <a href="/download">Companion</a>
         <a href="/billing">Pricing</a>
         <a href="/legal/sources">Sources</a>
         <a href="/login">Sign in</a>

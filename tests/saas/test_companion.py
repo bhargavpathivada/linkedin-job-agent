@@ -104,9 +104,9 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["accepted"], 1)
 
-        r = client.get("/download")
-        self.assertEqual(r.status_code, 200)
-        self.assertIn(b"Companion", r.content)
+        r = client.get("/download", follow_redirects=False)
+        self.assertEqual(r.status_code, 303)
+        self.assertTrue(r.headers["location"].startswith("/login"))
 
     def test_device_limit_on_free(self) -> None:
         from jobsearch_saas.auth import create_user

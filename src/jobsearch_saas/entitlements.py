@@ -91,6 +91,13 @@ def active_plan(user_id: str) -> dict[str, Any]:
     return plan
 
 
+def has_approved_access(user_id: str) -> bool:
+    """True when the user has an active paid pass (admin-approved payment or equivalent)."""
+    plan = active_plan(user_id)
+    plan_id = str(plan.get("plan_id") or "free")
+    return plan_id != "free" and plan_id in PLANS
+
+
 def can_show_match(user_id: str) -> tuple[bool, str]:
     plan = active_plan(user_id)
     if plan.get("matches_unlimited"):

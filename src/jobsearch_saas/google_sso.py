@@ -28,13 +28,20 @@ def _sign(raw: str) -> str:
     return hmac.new(SECRET_KEY.encode(), raw.encode(), hashlib.sha256).hexdigest()[:20]
 
 
-def make_state(*, mode: str, consents: dict[str, bool] | None = None, plan_id: str = "") -> str:
+def make_state(
+    *,
+    mode: str,
+    consents: dict[str, bool] | None = None,
+    plan_id: str = "",
+    next_path: str = "",
+) -> str:
     """Signed state survives Google redirect even if session cookie is lost."""
     payload = {
         "n": secrets.token_urlsafe(10),
         "mode": mode,
         "consents": consents or {},
         "plan_id": (plan_id or "").strip(),
+        "next_path": (next_path or "").strip(),
     }
     raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
     return f"{raw}.{_sign(raw)}"

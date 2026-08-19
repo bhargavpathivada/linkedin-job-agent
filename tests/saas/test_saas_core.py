@@ -147,6 +147,147 @@ class TestAuthBillingPrivacy(SaasTestCase):
         self.assertEqual(len(pending), 1)
 
 
+class TestPaymentApprovalEmailAndDownload(SaasTestCase):
+    def _session_client(self, user_id: str):
+        from fastapi.testclient import TestClient
+        from jobsearch_saas.api.app import app
+        from jobsearch_saas.auth import create_session
+        from jobsearch_saas.config import SESSION_COOKIE
+
+        client = TestClient(app)
+        client.cookies.set(SESSION_COOKIE, create_session(user_id))
+        return client
+
+    def test_approve_sends_email_and_gates_download(self) -> None:
+        from unittest.mock import patch
+
+        from jobsearch_saas.auth import create_user
+        from jobsearch_saas.billing import qr_payments
+        from jobsearch_saas.download_gate import make_download_token
+        from jobsearch_saas.entitlements import active_plan, has_approved_access
+
+        user = create_user(email="paid@example.com", password="password123", full_name="Paid User")
+        other = create_user(email="other@example.com", password="password123", full_name="Other User")
+        checkout = qr_payments.start_checkout(user["id"], "pass_199")
+        shot = qr_payments.save_screenshot(user["id"], checkout["payment_id"], "proof.jpg", b"fake-image")
+        sub = qr_payments.submit_payment(
+            user["id"],
+            checkout["payment_id"],
+            payer_name="Paid User",
+            phone="9999999999",
+            transaction_id="T9876543210",
+            screenshot_path=shot,
+        )
+
+        with patch(
+            "jobsearch_saas.billing.qr_payments.send_payment_approved_email",
+            return_value=True,
+        ) as mock_send:
+            approved = qr_payments.approve_submission(
+                sub["id"],
+                admin_email="admin@letitapply.com",
+                notes="looks good",
+            )
+
+        mock_send.assert_called_once()
+        self.assertTrue(approved["email_sent"])
+        self.assertEqual(approved["status"], "approved")
+        self.assertEqual(active_plan(user["id"])["plan_id"], "pass_199")
+        self.assertTrue(has_approved_access(user["id"]))
+        self.assertFalse(has_approved_access(other["id"]))
+
+        from fastapi.testclient import TestClient
+        from jobsearch_saas.api.app import app
+
+        anon = TestClient(app)
+        r = anon.get("/download", follow_redirects=False)
+        self.assertEqual(r.status_code, 303)
+        self.assertTrue(r.headers["location"].startswith("/login"))
+
+        r = anon.get("/dashboard", follow_redirects=False)
+        self.assertEqual(r.status_code, 303)
+        self.assertTrue(r.headers["location"].startswith("/login"))
+
+        free_client = self._session_client(other["id"])
+        r = free_client.get("/dashboard", follow_redirects=False)
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn(b'href="/download"', r.content)
+        r = free_client.get("/download", follow_redirects=False)
+        self.assertEqual(r.status_code, 403)
+        self.assertIn(b"private", r.content.lower())
+
+        paid_client = self._session_client(user["id"])
+        r = paid_client.get("/download", follow_redirects=False)
+        self.assertEqual(r.status_code, 403)
+        self.assertIn(b"private", r.content.lower())
+
+        r = paid_client.post("/download/open", follow_redirects=False)
+        self.assertEqual(r.status_code, 303)
+        self.assertEqual(r.headers["location"], "/download")
+        r = paid_client.get("/download", follow_redirects=False)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"Companion", r.content)
+
+        token = make_download_token(user["id"])
+        other_client = self._session_client(other["id"])
+        r = other_client.get(f"/download?k={token}", follow_redirects=False)
+        self.assertEqual(r.status_code, 403)
+
+        owner_client = self._session_client(user["id"])
+        r = owner_client.get(f"/download?k={token}", follow_redirects=False)
+        self.assertEqual(r.status_code, 200)
+
+    def test_approval_email_html_matches_brand_and_binds_user(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from jobsearch_saas.download_gate import parse_download_token
+        from jobsearch_saas.email import transactional as mail
+
+        submission = {
+            "user_id": "user-123",
+            "user_email": "paid@example.com",
+            "user_full_name": "Paid User",
+            "plan_id": "pass_199",
+            "amount_paise": 19900,
+        }
+        captured: dict[str, str] = {}
+
+        def fake_sendmail(_frm: str, _to: list[str], raw: str) -> None:
+            captured["to"] = _to[0]
+            captured["raw"] = raw
+
+        server = MagicMock()
+        server.sendmail.side_effect = fake_sendmail
+        with patch.object(mail, "smtp_configured", return_value=True), patch.object(
+            mail.smtplib, "SMTP_SSL"
+        ) as smtp:
+            smtp.return_value.__enter__.return_value = server
+            self.assertTrue(mail.send_payment_approved_email(submission))
+
+        self.assertEqual(captured["to"], "paid@example.com")
+        raw = captured["raw"]
+        self.assertIn("Subject:", raw)
+        self.assertIn("Payment_approved", raw)
+        self.assertIn("paid@example.com", raw)
+
+        html = mail._html_body(
+            first_name="Paid",
+            plan_name="Starter",
+            amount_display="₹199",
+            days=30,
+            download_url=mail.download_url_for_user("user-123"),
+            dashboard_url="http://127.0.0.1:8000/dashboard",
+        )
+        self.assertIn("Download Companion", html)
+        self.assertIn("#2563eb", html)
+        self.assertIn("anyone else", html)
+        self.assertIn("/download?k=", html)
+        token = html.split("/download?k=", 1)[1].split('"', 1)[0]
+        from urllib.parse import unquote
+
+        self.assertEqual(parse_download_token(unquote(token)), "user-123")
+
+
 class TestOAuthHelpers(SaasTestCase):
     def test_token_roundtrip(self) -> None:
         from jobsearch_saas.email.oauth import encrypt_token, decrypt_token

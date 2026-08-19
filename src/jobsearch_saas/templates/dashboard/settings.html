@@ -47,7 +47,14 @@
         </tbody>
       </table>
     {% else %}
-      <p class="muted">No companion devices yet. <a href="/download">Download Companion</a></p>
+      <p class="muted">No companion devices yet.
+        {% if not can_download %}Companion download unlocks after payment is approved.{% endif %}
+      </p>
+      {% if can_download %}
+      <form method="post" action="/download/open">
+        <button class="btn ghost" type="submit">Download Companion</button>
+      </form>
+      {% endif %}
     {% endif %}
   </div>
   <div class="card">

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from pathlib import Path
@@ -10,7 +11,10 @@ from typing import Any
 from jobsearch_saas import db
 from jobsearch_saas.billing.razorpay_billing import plan_price_breakdown
 from jobsearch_saas.config import PLANS, UPLOAD_DIR
+from jobsearch_saas.email.transactional import send_payment_approved_email
 from jobsearch_saas.entitlements import activate_plan
+
+log = logging.getLogger(__name__)
 
 
 class DuplicateTransactionError(Exception):
@@ -343,7 +347,16 @@ def approve_submission(submission_id: str, *, admin_email: str, notes: str = "")
         )
 
     activate_plan(sub["user_id"], sub["plan_id"])
-    return get_submission(submission_id)  # type: ignore[return-value]
+    approved = get_submission(submission_id)
+    email_sent = False
+    if approved:
+        try:
+            email_sent = bool(send_payment_approved_email(approved))
+        except Exception as exc:
+            log.warning("Payment approval email failed for %s: %s", approved.get("user_email"), exc)
+            email_sent = False
+        approved["email_sent"] = email_sent
+    return approved  # type: ignore[return-value]
 
 
 def reject_submission(submission_id: str, *, admin_email: str, notes: str = "") -> dict[str, Any]:
